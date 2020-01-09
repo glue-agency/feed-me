@@ -36,6 +36,7 @@
 
                     {% set disabled = hash_get(feed.fieldMapping, blockPath | join('.') ~ '.disabled') ?: '' %}
                     {% set collapsed = hash_get(feed.fieldMapping, blockPath | join('.') ~ '.collapsed') ?: '' %}
+                    {% set grouped = hash_get(feed.fieldMapping, blockPath | join('.') ~ '.grouped') ?: '' %}
 
                     {% namespace 'fieldMapping[' ~ blockPath | join('][') ~ ']' %}
                         {{ feedMeMacro.checkbox({
@@ -51,6 +52,14 @@
                             value: 1,
                             checked: collapsed,
                         }) }}
+
+                        {{ feedMeMacro.checkbox({
+                            label: 'Grouped' | t('feed-me'),
+                            name: 'grouped',
+                            value: 1,
+                            checked: grouped,
+                        }) }}
+
                     {% endnamespace %}
                 </div>
             </td>

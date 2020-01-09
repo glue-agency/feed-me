@@ -43,15 +43,24 @@ class Matrix extends Field implements FieldInterface
         //
         // So, in order to keep data in the order provided in our feed, we start there (as opposed to looping through blocks)
 
+        $groupedValues = [];
+
         foreach ($this->feedData as $nodePath => $value) {
             // Get the field mapping info for this node in the feed
             $fieldInfo = $this->_getFieldMappingInfoForNodePath($nodePath, $blocks);
 
             // If this is data concerning our Matrix field and blocks
             if ($fieldInfo) {
+
+                $grouped = $fieldInfo['grouped'] == false ? false : true;
+
                 $blockHandle = $fieldInfo['blockHandle'];
                 $subFieldHandle = $fieldInfo['subFieldHandle'];
                 $subFieldInfo = $fieldInfo['subFieldInfo'];
+
+                //add grouped info for supertable/matrix nested sets
+                $subFieldInfo['grouped'] = $grouped;
+
                 $isComplexField = $fieldInfo['isComplexField'];
 
                 $nodePathSegments = explode('/', $nodePath);
@@ -68,6 +77,9 @@ class Matrix extends Field implements FieldInterface
                 }
 
                 $key = $blockIndex . '.' . $blockHandle . '.' . $subFieldHandle;
+
+                //add group handle
+                $groupKey = $blockHandle . '.' . $subFieldHandle;
 
                 // Check for complex fields (think Table, Super Table, etc), essentially anything that has
                 // sub-fields, and doesn't have data directly mapped to the field itself. It needs to be
@@ -86,6 +98,17 @@ class Matrix extends Field implements FieldInterface
                 // Parse each field via their own fieldtype service
                 $parsedValue = $this->_parseSubField($this->feedData, $subFieldHandle, $subFieldInfo);
 
+                if($grouped){
+
+                    //set the field key to the first occurence
+                    if(!isset($groupedValues[$groupKey]['key'])){
+                        $groupedValues[$groupKey]['key'] = $key;
+                    }
+
+                    //use the same occurence key for the rest off the grouped values
+                    $key = $groupedValues[$groupKey]['key'];
+                }
+
                 // Finish up with the content, also sort out cases where there's array content
                 if (isset($fieldData[$key])) {
                     if (is_array($fieldData[$key])) {
@@ -99,23 +122,93 @@ class Matrix extends Field implements FieldInterface
             }
         }
 
+
+
         // Handle some complex fields that don't directly have nodes, but instead have nested properties mapped.
         // They have their mapping setup on sub-fields, and need to be processed all together, which we've already prepared.
         // Additionally, we only want to supply each field with a sub-set of data related to that specific block and field
         // otherwise, we get the field class processing all blocks in one go - not what we want.
+
+        $groupedValues = [];
+
+        $i = 1;
+        $newCounter = 1;
+
         foreach ($complexFields as $key => $complexInfo) {
+
             $parts = explode('.', $key);
             $subFieldHandle = $parts[2];
 
             $subFieldInfo = Hash::get($complexInfo, 'info');
             $nodePaths = Hash::get($complexInfo, 'data');
+            $grouped = $subFieldInfo['grouped'];
 
-            $parsedValue = $this->_parseSubField($nodePaths, $subFieldHandle, $subFieldInfo);
+            $groupKey = $parts[1] . '.' . $subFieldHandle;
+
+            //$parsedValue = $this->_parseSubField($nodePaths, $subFieldHandle, $subFieldInfo);
+
+            $nodePathsArray = [];
+
+            foreach($nodePaths AS $nodePathKey => $nodePathVal)
+            {
+                // Get the node number
+                $pathArray = explode("/", $nodePathKey);
+
+                $nodeNumber = reset($pathArray);
+                $nodePathsArray[$nodeNumber][$nodePathKey] = $nodePathVal;
+            }
+
+            if($grouped && isset($groupedValues[$groupKey]['increment'])){
+                $i = $groupedValues[$groupKey]['increment'];
+            }
+
+            $parsedValue = array();
+            foreach($nodePathsArray AS $nodePathsArrayKey => $nodePathsArrayValue)
+            {
+                $parsedValueTemp = $this->_parseSubField($nodePathsArrayValue, $subFieldHandle, $subFieldInfo);
+
+                if($grouped){
+
+                    if(!isset($parsedValue["new" . $newCounter])){
+                        $parsedValue["new" . $newCounter] = reset($parsedValueTemp);
+                    }
+
+                    $parsedValue["new" . $newCounter]['fields'] = array_merge($parsedValue["new" . $newCounter]['fields'],reset($parsedValueTemp)['fields']);
+                }
+
+                if(!$grouped) {
+                    $parsedValue["new" . $newCounter] = reset($parsedValueTemp);
+                    $newCounter++;
+                }
+            }
+
+            if($grouped){
+
+                if(!isset($groupedValues[$groupKey]['values'])){
+                    $groupedValues[$groupKey]['values'] = [];
+                }
+
+                $groupedValues[$groupKey]['values'] = array_merge($groupedValues[$groupKey]['values'],$parsedValue);
+
+                //set the field key to the first occurence
+                if(!isset($groupedValues[$groupKey]['key'])){
+                    $groupedValues[$groupKey]['key'] = $key;
+                }
+
+                $groupedValues[$groupKey]['increment'] = $newCounter;
+
+                //use the same occurence key for the rest off the grouped values
+                $key = $groupedValues[$groupKey]['key'];
+            }
 
             if (isset($fieldData[$key])) {
                 $fieldData[$key] = array_merge_recursive($fieldData[$key], $parsedValue);
             } else {
                 $fieldData[$key] = $parsedValue;
+            }
+
+            if($grouped){
+                $newCounter++;
             }
         }
 
@@ -125,9 +218,20 @@ class Matrix extends Field implements FieldInterface
 
         // New, we've got a collection of prepared data, but its formatted a little rough, due to catering for
         // sub-field data that could be arrays or single values. Lets build our Matrix-ready data
+
+        $i = 1;
+
+
         foreach ($fieldData as $blockSubFieldHandle => $value) {
+
             $handles = explode('.', $blockSubFieldHandle);
-            $blockIndex = 'new' . ($handles[0] + 1);
+
+            //$blockIndex = 'new' . ($handles[0] + 1);
+
+            //@todo root of the problem!
+
+            $blockIndex = 'new' . $i;
+
             $blockHandle = $handles[1];
             $subFieldHandle = $handles[2];
 
@@ -141,6 +245,8 @@ class Matrix extends Field implements FieldInterface
             $preppedData[$blockIndex . '.collapsed'] = $collapsed;
             $preppedData[$blockIndex . '.fields.' . $subFieldHandle] = $value;
             // $order++;
+
+            $i++;
         }
 
         $preppedData = Hash::expand($preppedData);
@@ -155,7 +261,9 @@ class Matrix extends Field implements FieldInterface
     private function _getFieldMappingInfoForNodePath($nodePath, $blocks)
     {
         foreach ($blocks as $blockHandle => $blockInfo) {
+
             $fields = Hash::get($blockInfo, 'fields');
+            $grouped = Hash::get($blockInfo,'grouped',false);
 
             $feedPath = preg_replace('/(\/\d+\/)/', '/', $nodePath);
             $feedPath = preg_replace('/^(\d+\/)|(\/\d+)/', '', $feedPath);
@@ -174,6 +282,7 @@ class Matrix extends Field implements FieldInterface
                                 'subFieldInfo' => $subFieldInfo,
                                 'nodePath' => $nodePath,
                                 'isComplexField' => true,
+                                'grouped'   =>  $grouped,
                             ];
                         }
                     }
@@ -186,6 +295,7 @@ class Matrix extends Field implements FieldInterface
                         'subFieldInfo' => $subFieldInfo,
                         'nodePath' => $nodePath,
                         'isComplexField' => false,
+                        'grouped'   =>  $grouped,
                     ];
                 }
             }
@@ -196,6 +306,8 @@ class Matrix extends Field implements FieldInterface
     {
         $subFieldClassHandle = Hash::get($subFieldInfo, 'field');
 
+        //doesn't handle blockhandles with the same name, within the same matrix
+
         $subField = Hash::extract($this->field->getBlockTypeFields(), '{n}[handle=' . $subFieldHandle . ']')[0];
 
         $class = Plugin::$plugin->fields->getRegisteredField($subFieldClassHandle);
@@ -205,6 +317,7 @@ class Matrix extends Field implements FieldInterface
         $class->field = $subField;
         $class->element = $this->element;
         $class->feed = $this->feed;
+
 
         // Get our content, parsed by this fields service function
         $parsedValue = $class->parseField();
