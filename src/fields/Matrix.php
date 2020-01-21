@@ -50,7 +50,7 @@ class Matrix extends Field implements FieldInterface
             $fieldInfo = $this->_getFieldMappingInfoForNodePath($nodePath, $blocks);
 
             // If this is data concerning our Matrix field and blocks
-            if ($fieldInfo) {
+            if ($fieldInfo && isset($value)) {
 
                 $grouped = $fieldInfo['grouped'] == false ? false : true;
 
